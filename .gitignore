@@ -1,0 +1,16 @@
+# .NET build output
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# 실행 결과물
+dump/
+
+# 로컬 로그
+*.log
+
+# IDE
+.idea/
+.vscode/

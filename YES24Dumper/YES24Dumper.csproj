@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <RootNamespace>YES24Dumper</RootNamespace>
+    <AssemblyName>YES24Dumper</AssemblyName>
+    <NoWarn>CS8600;CS8602;CS8603;CS8604;CS8618;CS8625</NoWarn>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <PreserveCompilationContext>true</PreserveCompilationContext>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Lib.Harmony" Version="2.3.3" />
+  </ItemGroup>
+
+  <!-- StartupHook needs the class named 'StartupHook' in the global namespace with a static Initialize() -->
+  <PropertyGroup>
+    <StartupObject></StartupObject>
+  </PropertyGroup>
+
+</Project>
