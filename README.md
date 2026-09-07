@@ -4,7 +4,10 @@ YES24 eBook 뷰어에서 **본인이 구매·소장 중인 DRM PDF** 를 원본 
 
 `DOTNET_STARTUP_HOOKS` 로 뷰어 프로세스에 관리형 DLL을 인젝션하고, **Harmony** 로 `Yes24eBook.ViewModels.Viewer.PDFViewModel.getMemFileContent(string) → byte[]` 를 후킹하면 뷰어가 만들어낸 완전히 복호화된 PDF 바이트 배열이 그대로 파일로써 저장됩니다.
 
-:: 2026/09/07 이후 기준 DOTNET_STARTUP_HOOKS 패치됨.
+:: 2026/09/07 이후 기준 ~~패치됨~~ 작동중 => 분석결과 문자열 블랙리스트에 'Dumper', 'Harmony'(C# Hook) 이 포함되어있어 무결성 검사에 감지됨
+
+:: Harmony 이름 변경 및 일부 선언을 바꿈으로써 해결
+
 ---
 
 ## ✨ 특징
