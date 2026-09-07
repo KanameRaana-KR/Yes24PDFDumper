@@ -4,6 +4,7 @@ YES24 eBook 뷰어에서 **본인이 구매·소장 중인 DRM PDF** 를 원본 
 
 `DOTNET_STARTUP_HOOKS` 로 뷰어 프로세스에 관리형 DLL을 인젝션하고, **Harmony** 로 `Yes24eBook.ViewModels.Viewer.PDFViewModel.getMemFileContent(string) → byte[]` 를 후킹하면 뷰어가 만들어낸 완전히 복호화된 PDF 바이트 배열이 그대로 파일로써 저장됩니다.
 
+:: 2026/09/07 이후 기준 DOTNET_STARTUP_HOOKS 패치됨.
 ---
 
 ## ✨ 특징
@@ -114,6 +115,10 @@ Yes24PDFDumper/
 - 추출한 파일의 **재배포·업로드·공유는 저작권법 위반** 이며, 이 도구 배포자와 무관합니다
 - 사용자는 자신이 속한 국가/지역의 저작권법 및 YES24 이용약관을 준수할 책임이 있습니다
 - 사용으로 발생하는 어떤 결과에도 저자는 책임지지 않습니다
+
+### AI
+
+- Claude Opus 4.7(Low + Medium)
 
 ---
 
