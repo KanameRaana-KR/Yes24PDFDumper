@@ -6,10 +6,6 @@ YES24 eBook 뷰어에서 **본인이 구매·소장 중인 DRM PDF** 를 원본 
 
 Telegram : @RaanaKR
 
-:: 2026/09/07 이후 기준 ~~패치됨~~ 작동중 => 분석결과 문자열 블랙리스트에 'Dumper', 'Harmony'(C# Hook) 이 포함되어있어 무결성 검사에 감지됨
-
-:: Harmony 이름 변경 및 일부 선언을 바꿈으로써 해결, 로드 직후 DOTNET_STARTUP_HOOKS 환경 변수를 초기화
-
 ---
 
 ## ✨ 특징
