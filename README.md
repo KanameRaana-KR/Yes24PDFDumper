@@ -45,7 +45,7 @@ dotnet build YES24Plugin\YES24Plugin.csproj -c Release
 1. **본인이 구매한 책을 YES24 eBook 앱에서 미리 다운로드** (앱 재실행 없이 라이브러리에 나타나야 함)
 2. 저장소 루트에서 `run.bat` 더블클릭
 3. 뷰어가 뜨면 **책 커버를 클릭해 리더를 열기**
-4. `dump\` 폴더에 `〈책제목〉.PDF` 가 자동 저장됨
+4. `dump\` 폴더에 `uuid.PDF` 가 자동 저장됨
 
 성공 시 로그(`dump\dumper.log`) 예시:
 
