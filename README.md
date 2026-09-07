@@ -2,7 +2,7 @@
 
 YES24 eBook 뷰어에서 **본인이 구매·소장 중인 DRM PDF** 를 원본 그대로 추출하는 .NET 8 도구.
 
-`DOTNET_STARTUP_HOOKS` 로 뷰어 프로세스에 관리형 DLL을 인젝션하고, **Harmony** 로 `Yes24eBook.ViewModels.Viewer.PDFViewModel.getMemFileContent(string) → byte[]` 를 후킹하면 뷰어가 만들어낸 완전히 복호화된 PDF 바이트 배열이 그대로 파일로써 저장합니다.
+`DOTNET_STARTUP_HOOKS` 로 뷰어 프로세스에 관리형 DLL을 인젝션하고, **Harmony** 로 `Yes24eBook.ViewModels.Viewer.PDFViewModel.getMemFileContent(string) → byte[]` 를 후킹하면 뷰어가 만들어낸 완전히 복호화된 PDF 바이트 배열이 그대로 파일로써 저장됩니다.
 
 ---
 
@@ -10,7 +10,10 @@ YES24 eBook 뷰어에서 **본인이 구매·소장 중인 DRM PDF** 를 원본 
 
 - **원본 PDF 그대로**: 페이지 스크린샷이 아니라 내부에서 가져오는 **원본 파일** 을 획득
 - **자동 스캐빈저**: WPF 트리에서 `PDFViewModel` 인스턴스를 찾아, `%APPDATA%\Yes24eBook\.content\` 하위 신간이 뜨면 리플렉션으로 `UnDrmClient.GetMemFileContent()` 능동 호출
-- **안티 후킹 우회**: `UnDrmSecurityCoreNet.UnDrmAntiPassAssembly` 의 검사 대상(`FakeAssembly`, `AssemblyInfoLoader`, `AssemblyInfoResult`, `Assembly` 서브클래스) 어디에도 걸리지 않음
+- **2026.09.07 안티 후킹 패치 완벽 우회**:
+  - **환경변수 선제 소거**: 뷰어 부트스트랩 즉시 Win32 `SetEnvironmentVariableW("DOTNET_STARTUP_HOOKS", null)`를 호출하여 `UnDrmClientNet.dll`의 네이티브 환경변수 스캐너(`ScrubDotnetInjectionVars`)를 무력화
+  - **어셈블리 블랙리스트 우회**: 프로젝트명을 `YES24Plugin`으로 지정하고 Harmony 메타데이터 이름을 `LibCore`로 바이너리 패칭하여 `ValidateAllLoadedAssemblies`의 하드코딩 블랙리스트(`"Dumper"`, `"Harmony"`)를 원천 회피
+  - **보안 훅 중화 (2중 안전망)**: `UnDrmSecurityCoreNet.UnDrmAntiPassAssembly.DetectFakeAssembly`를 Harmony Prefix로 가로채 항시 통과 처리
 - **C++/CLI 우회**: DRM 엔진(`UnDrmClientNet`) 은 C++/CLI mixed-mode 라 Harmony IL rewrite 가 실패 → 순수 C# wrapper 계층인 `PDFViewModel` 에서 후킹
 
 ---
@@ -28,10 +31,10 @@ YES24 eBook 뷰어에서 **본인이 구매·소장 중인 DRM PDF** 를 원본 
 ## 🔨 빌드
 
 ```bash
-dotnet build YES24Dumper\YES24Dumper.csproj -c Release
+dotnet build YES24Plugin\YES24Plugin.csproj -c Release
 ```
 
-빌드 결과물: `YES24Dumper\bin\Release\net8.0-windows\YES24Dumper.dll`
+빌드 결과물: `YES24Plugin\bin\Release\net8.0-windows\YES24Plugin.dll`
 
 ---
 
@@ -42,7 +45,7 @@ dotnet build YES24Dumper\YES24Dumper.csproj -c Release
 3. 뷰어가 뜨면 **책 커버를 클릭해 리더를 열기**
 4. `dump\` 폴더에 `〈책제목〉.PDF` 가 자동 저장됨
 
-성공 시 로그(`dump\dumper.log`) 마지막:
+성공 시 로그(`dump\dumper.log`) 예시:
 
 ```
 [Dump] GetMemFileContent(".../<uuid>.PDF") -> byte[3975184]  head=25 50 44 46 ...
@@ -59,12 +62,13 @@ dotnet build YES24Dumper\YES24Dumper.csproj -c Release
 ```
 run.bat  (DOTNET_STARTUP_HOOKS 세팅)
    ↓
-YES24eBook.exe 시작 → .NET 런타임이 YES24Dumper.dll 을 Main() 전에 로드
+YES24eBook.exe 시작 → .NET 런타임이 YES24Plugin.dll 을 Main() 전에 로드
    ↓
 StartupHook.Initialize()
-   ├─ 0Harmony.dll 사이드로드 (AssemblyResolve)
+   ├─ Win32 SetEnvironmentVariableW 로 DOTNET_STARTUP_HOOKS 즉시 소거 (안티 덤프 우회)
+   ├─ LibCore.dll 사이드로드 (AssemblyResolve)
    ├─ YES24eBook.dll 로드 감지 후:
-   │     ├─ UnDrmClientNet.dll 프리로드 (PDFViewModel 시그니처 해석용)
+   │     ├─ UnDrmClientNet.dll 프리로드 & DetectFakeAssembly 중화 패치
    │     └─ Harmony.Patch(PDFViewModel.getMemFileContent) postfix
    └─ 백그라운드 스캐빈저 시작
          ├─ WPF PresentationSource.CurrentSources 순회
@@ -74,20 +78,21 @@ StartupHook.Initialize()
                → 반환된 byte[] 를 dump\〈원본이름〉 로 저장
 ```
 
-**hook 우회 대상은 순수 C# wrapper**, **C++/CLI native 호출은 리플렉션으로 우회**
-Yes24EBook이 .NET 런타임이 아닌 구축으로 전환하거나 DOTNET_STARTUP_HOOKS 를 막는것으로 패치 가능.
 ---
 
 ## 🗂 프로젝트 구조
 
 ```
 Yes24PDFDumper/
-├── YES24Dumper/
-│   ├── YES24Dumper.csproj    # .NET 8 클래스 라이브러리
-│   ├── StartupHook.cs         # DOTNET_STARTUP_HOOKS 진입점
-│   └── PdfPatches.cs          # Harmony 후킹 + 스캐빈저
-├── run.bat                     # 환경변수 세팅 후 뷰어 실행
-├── LICENSE                     # MIT
+├── YES24Plugin/
+│   ├── YES24Plugin.csproj    # .NET 8 클래스 라이브러리
+│   ├── StartupHook.cs         # DOTNET_STARTUP_HOOKS 진입점 & 환경변수 소거
+│   └── PdfPatches.cs          # Harmony 후킹 + 스캐빈저 + 안티후킹 중화
+├── tools/
+│   └── PatchHarmony/         # 0Harmony -> LibCore 어셈블리 리네이밍 도구
+├── LibCore.dll                # 블랙리스트 우회용 패치된 Harmony 바이너리
+├── run.bat                    # 환경변수 세팅 후 뷰어 실행
+├── LICENSE                    # MIT
 └── README.md
 ```
 
@@ -97,7 +102,7 @@ Yes24PDFDumper/
 
 | 증상 | 원인 / 조치 |
 | --- | --- |
-| `Hook DLL not found` | `dotnet build ... -c Release` 먼저 실행 |
+| `Hook DLL not found` | `dotnet build YES24Plugin\YES24Plugin.csproj -c Release` 먼저 실행 |
 | `EXE not found` | [run.bat](run.bat) 상단 `YES24_INSTALL_DIR` 수정 |
 | `Preloaded ...` 만 뜨고 그 다음 로그 없음 | YES24eBook.dll 이 아직 로드 안 된 상태. 책 커버를 실제로 클릭해서 리더를 열어봐야 함 |
 | `[Dump]` 라인이 안 뜸 | 백그라운드 스캐빈저가 인스턴스를 못 잡음. 리더 완전히 열린 뒤 30초 정도 대기 |

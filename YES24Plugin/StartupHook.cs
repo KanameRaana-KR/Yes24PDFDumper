@@ -1,8 +1,9 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using HarmonyLib;
-using YES24Dumper;
+using YES24Plugin;
 
 // StartupHook MUST be in the global namespace with exactly this signature.
 internal class StartupHook
@@ -13,21 +14,53 @@ internal class StartupHook
     private static bool _hooked = false;
     private static readonly object _hookLock = new();
 
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool SetEnvironmentVariableW(string lpName, string lpValue);
+
     public static void Initialize()
     {
+        // 1. Immediately scrub DOTNET_STARTUP_HOOKS and other injection variables from Win32 environment
+        // so UnDrmClientNet's native ScrubDotnetInjectionVars() never detects anything!
+        try
+        {
+            string[] scrubList = new[]
+            {
+                "DOTNET_STARTUP_HOOKS",
+                "DOTNET_ADDITIONAL_DEPS",
+                "CORECLR_PROFILER",
+                "CORECLR_ENABLE_PROFILING",
+                "CORECLR_PROFILER_PATH_32",
+                "CORECLR_PROFILER_PATH_64",
+                "CORECLR_PROFILER_PATH",
+                "DOTNET_EnableDiagnostics"
+            };
+            foreach (var v in scrubList)
+            {
+                SetEnvironmentVariableW(v, null);
+                Environment.SetEnvironmentVariable(v, null);
+            }
+        }
+        catch { }
+
         try
         {
             HookDir = Path.GetDirectoryName(typeof(StartupHook).Assembly.Location);
 
-            // Sideload our own deps (0Harmony.dll) from the hook DLL's directory,
+            // Sideload our own deps (LibCore.dll) from the hook DLL's directory,
             // since app deps.json doesn't know about us.
             AppDomain.CurrentDomain.AssemblyResolve += (s, e) =>
             {
                 try
                 {
-                    var name = new AssemblyName(e.Name).Name + ".dll";
+                    var reqName = new AssemblyName(e.Name).Name;
+                    var name = reqName + ".dll";
                     var cand = Path.Combine(HookDir, name);
                     if (File.Exists(cand)) return Assembly.LoadFrom(cand);
+                    if (reqName.Equals("0Harmony", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var libCore = Path.Combine(HookDir, "LibCore.dll");
+                        if (File.Exists(libCore)) return Assembly.LoadFrom(libCore);
+                    }
                 }
                 catch { }
                 return null;
@@ -38,23 +71,21 @@ internal class StartupHook
                 DumpRoot = Path.Combine(Path.GetTempPath(), "yes24_dump");
             Directory.CreateDirectory(DumpRoot);
 
-            Log($"[YES24Dumper] Startup hook alive.  Dump dir: {DumpRoot}");
-            Log($"[YES24Dumper] PID={Pid}");
+            Log($"[YES24Plugin] Startup hook alive. Dump dir: {DumpRoot}");
+            Log($"[YES24Plugin] PID={Pid}");
 
             // Watch for YES24eBook.dll to load — that's when we know the viewer is coming up.
             AppDomain.CurrentDomain.AssemblyLoad += (s, e) => TryHook(e.LoadedAssembly);
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
                 TryHook(asm);
         }
-        catch (Exception ex) { Log("[YES24Dumper] Initialize failed: " + ex); }
+        catch (Exception ex) { Log("[YES24Plugin] Initialize failed: " + ex); }
     }
 
     private static void TryHook(Assembly asm)
     {
         if (asm == null) return;
         string name = asm.GetName().Name ?? "";
-        // We only need YES24eBook.dll to be loaded so we know x64/UnDrmClientNet.dll
-        // is discoverable next to it.
         if (!name.Equals("YES24eBook", StringComparison.OrdinalIgnoreCase)) return;
 
         lock (_hookLock)
@@ -76,22 +107,25 @@ internal class StartupHook
             foreach (var c in candidates)
             {
                 if (!File.Exists(c)) continue;
-                try { undrm = Assembly.LoadFrom(c); Log("[YES24Dumper] Preloaded " + c); break; }
-                catch (Exception ex) { Log("[YES24Dumper]   load fail " + c + ": " + ex.Message); }
+                try { undrm = Assembly.LoadFrom(c); Log("[YES24Plugin] Preloaded " + c); break; }
+                catch (Exception ex) { Log("[YES24Plugin]   load fail " + c + ": " + ex.Message); }
             }
             if (undrm == null)
             {
-                Log("[YES24Dumper] Could not locate UnDrmClientNet.dll — aborting.");
+                Log("[YES24Plugin] Could not locate UnDrmClientNet.dll — aborting.");
                 return;
             }
 
-            HarmonyInstance = new Harmony("nyx.yes24.dumper");
-            // C++/CLI methods in UnDrmClientNet cause Harmony InvalidProgramException.
-            // Hook the pure-C# wrapper in YES24eBook.dll instead — same byte[], no post-processing.
+            HarmonyInstance = new Harmony("nyx.yes24.plugin");
+
+            // Install anti-tamper neutralizer on UnDrmAntiPassAssembly
+            PdfPatches.HookSecurity(HarmonyInstance, undrm);
+
+            // Hook the pure-C# wrapper in YES24eBook.dll
             PdfPatches.HookPdfViewModel(HarmonyInstance, asm);
-            Log("[YES24Dumper] Ready. Open a book in the viewer to trigger extraction.");
+            Log("[YES24Plugin] Ready. Open a book in the viewer to trigger extraction.");
         }
-        catch (Exception ex) { Log("[YES24Dumper] Hook install failed: " + ex); }
+        catch (Exception ex) { Log("[YES24Plugin] Hook install failed: " + ex); }
     }
 
     internal static int Pid => System.Diagnostics.Process.GetCurrentProcess().Id;

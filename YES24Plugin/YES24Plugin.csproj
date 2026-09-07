@@ -5,15 +5,18 @@
     <UseWPF>true</UseWPF>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>disable</Nullable>
-    <RootNamespace>YES24Dumper</RootNamespace>
-    <AssemblyName>YES24Dumper</AssemblyName>
+    <RootNamespace>YES24Plugin</RootNamespace>
+    <AssemblyName>YES24Plugin</AssemblyName>
     <NoWarn>CS8600;CS8602;CS8603;CS8604;CS8618;CS8625</NoWarn>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <PreserveCompilationContext>true</PreserveCompilationContext>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Lib.Harmony" Version="2.3.3" />
+    <!-- Use LibCore.dll (renamed 0Harmony without 'Harmony' or 'Dumper' in metadata) -->
+    <Reference Include="LibCore">
+      <HintPath>LibCore.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
   <!-- StartupHook needs the class named 'StartupHook' in the global namespace with a static Initialize() -->

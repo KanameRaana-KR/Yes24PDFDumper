@@ -6,7 +6,7 @@ using System.Text;
 using System.Threading;
 using HarmonyLib;
 
-namespace YES24Dumper;
+namespace YES24Plugin;
 
 /// <summary>
 /// Single, surgical hook on the one method IL-verified to return the fully
@@ -39,6 +39,52 @@ internal static class PdfPatches
     /// YES24eBook.dll instead — same byte[], zero post-processing (verified via
     /// PDFViewModel::getMemFileContent IL disasm).
     /// </summary>
+    
+    public static void HookSecurity(Harmony h, Assembly undrm)
+    {
+        try
+        {
+            var antiType = undrm.GetType("UnDrmSecurityCoreNet.UnDrmAntiPassAssembly");
+            if (antiType != null)
+            {
+                var mDetect = antiType.GetMethod("DetectFakeAssembly", BindingFlags.Public | BindingFlags.Static);
+                if (mDetect != null)
+                {
+                    var prefix = new HarmonyMethod(typeof(PdfPatches).GetMethod(nameof(Prefix_DetectFakeAssembly), BindingFlags.Static | BindingFlags.NonPublic));
+                    h.Patch(mDetect, prefix: prefix);
+                    StartupHook.Log("[Hook]   patched UnDrmAntiPassAssembly.DetectFakeAssembly");
+                }
+            }
+
+            var detectorType = undrm.GetType("UnDrmSecurityCoreNet.UnDrmRuntimeAntiPassAssemblyDetector");
+            if (detectorType != null)
+            {
+                var mCheck = detectorType.GetMethod("CheckForFakeAssembly", BindingFlags.Public | BindingFlags.Static);
+                if (mCheck != null)
+                {
+                    var prefix = new HarmonyMethod(typeof(PdfPatches).GetMethod(nameof(Prefix_CheckForFakeAssembly), BindingFlags.Static | BindingFlags.NonPublic));
+                    h.Patch(mCheck, prefix: prefix);
+                    StartupHook.Log("[Hook]   patched UnDrmRuntimeAntiPassAssemblyDetector.CheckForFakeAssembly");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            StartupHook.Log("[Hook]   Security neutralizer failed: " + ex.Message);
+        }
+    }
+
+    private static bool Prefix_DetectFakeAssembly(ref bool __result)
+    {
+        __result = false; // No fake assembly detected!
+        return false;     // Skip original check!
+    }
+
+    private static bool Prefix_CheckForFakeAssembly()
+    {
+        return false;     // Skip original check!
+    }
+
     public static void HookPdfViewModel(Harmony h, Assembly yes24)
     {
         var t = yes24.GetTypes()

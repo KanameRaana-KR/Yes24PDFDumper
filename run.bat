@@ -2,7 +2,7 @@
 setlocal
 
 REM ================================================================
-REM  YES24 eBook Dumper - StartupHook launcher (ASCII only)
+REM  YES24 eBook Plugin Dumper - StartupHook launcher (ASCII only)
 REM ================================================================
 
 set "YES24_INSTALL_DIR=C:\Program Files\YES24eBook"
@@ -10,12 +10,12 @@ set "YES24_EXE_NAME=YES24eBook.exe"
 
 set "YES24_DUMP_PATH=%~dp0dump"
 
-set "HOOK_DLL=%~dp0YES24Dumper\bin\Release\net8.0-windows\YES24Dumper.dll"
+set "HOOK_DLL=%~dp0YES24Plugin\bin\Release\net8.0-windows\YES24Plugin.dll"
 
 if not exist "%HOOK_DLL%" (
     echo [!] Hook DLL not found: %HOOK_DLL%
     echo     Build first:
-    echo         dotnet build YES24Dumper\YES24Dumper.csproj -c Release
+    echo         dotnet build YES24Plugin\YES24Plugin.csproj -c Release
     pause
     exit /b 1
 )
