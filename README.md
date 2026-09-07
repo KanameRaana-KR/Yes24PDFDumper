@@ -119,7 +119,7 @@ Yes24PDFDumper/
 
 ### AI
 
-- Claude Opus 4.7(Low + Medium)
+- Claude Opus 4.7(Low + Medium) + Gemini 3.8 flash(high)[2026.09.07 대응 패치용]
 
 ---
 
