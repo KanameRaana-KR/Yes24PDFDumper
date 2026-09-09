@@ -12,12 +12,7 @@ Telegram : @RaanaKR
 
 - **원본 PDF 그대로**: 페이지 스크린샷이 아니라 내부에서 가져오는 **원본 파일** 을 획득
 - **자동 스캐빈저**: WPF 트리에서 `PDFViewModel` 인스턴스를 찾아, `%APPDATA%\Yes24eBook\.content\` 하위 신간이 뜨면 리플렉션으로 `UnDrmClient.GetMemFileContent()` 능동 호출
-- **2026.09.07 안티 후킹 패치 완벽 우회**:
-  - **환경변수 선제 소거**: 뷰어 부트스트랩 즉시 Win32 `SetEnvironmentVariableW("DOTNET_STARTUP_HOOKS", null)`를 호출하여 `UnDrmClientNet.dll`의 네이티브 환경변수 스캐너(`ScrubDotnetInjectionVars`)를 무력화
-  - **어셈블리 블랙리스트 우회**: 프로젝트명을 `YES24Plugin`으로 지정하고 Harmony 메타데이터 이름을 `LibCore`로 바이너리 패칭하여 `ValidateAllLoadedAssemblies`의 하드코딩 블랙리스트(`"Dumper"`, `"Harmony"`)를 원천 회피
-  - **보안 훅 중화 (2중 안전망)**: `UnDrmSecurityCoreNet.UnDrmAntiPassAssembly.DetectFakeAssembly`를 Harmony Prefix로 가로채 항시 통과 처리
-- **C++/CLI 우회**: DRM 엔진(`UnDrmClientNet`) 은 C++/CLI mixed-mode 라 Harmony IL rewrite 가 실패 → 순수 C# wrapper 계층인 `PDFViewModel` 에서 후킹
-
+- **2026.09.08** Patched by Yes24.
 ---
 
 ## 📋 요구 사항
