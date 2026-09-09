@@ -1,45 +1,34 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using HarmonyLib;
 
 namespace YES24Plugin;
 
 /// <summary>
-/// Single, surgical hook on the one method IL-verified to return the fully
-/// decrypted book bytes:
-///     UnDrmClientNet.UnDrmClient::GetMemFileContent(string) -> byte[]
-///
-/// Verified via IDA IL disasm (UnDrmClientNet.dll @ 0x53d0):
-///   * calls native undrm_helper_get_content_wide()
-///   * Marshal.Copy(outBuf, byte[], 0, len)
-///   * bdb_free(outBuf), returns the clear-text array
-///
-/// Anti-hook detector (UnDrmSecurityCoreNet.UnDrmAntiPassAssembly.
-/// DetectSuspiciousTypes) only scans loaded assemblies for the string
-/// literals "FakeAssembly" / "AssemblyInfoLoader" / "AssemblyInfoResult",
-/// plus Assembly subclasses outside System.Reflection.*. HarmonyLib and
-/// YES24Dumper match none of these, so we're invisible.
+/// Robust hooks and scavenger for YES24 eBook:
+/// 1. Anti-Tamper Bypass (UnDrmAntiPassAssembly / RuntimeDetector)
+/// 2. Managed Hooks on ezPDFBookLib (EZPDF_OpenDRM) and EPUBViewModel
+/// 3. Multi-strategy live scavenger:
+///    - Invokes UnDrmClient byte[] decryptor (dynamic matching AB / GetMemFileContent)
+///    - Invokes UnDrmClient Stream decryptor (dynamic matching C / GetStreamContent)
+///    - Reads PDFViewModel._pStream directly
 /// </summary>
 internal static class PdfPatches
 {
     private static readonly object _writeLock = new();
     private static int _counter = 0;
+    private static readonly HashSet<string> _dumpedFiles = new(StringComparer.OrdinalIgnoreCase);
 
-    // Captured live PDFViewModel instance — set by ctor postfix.
+    // Captured live PDFViewModel instance
     internal static object LivePdfViewModel;
     internal static Type PdfViewModelType;
 
-    /// <summary>
-    /// C++/CLI methods on UnDrmClientNet.UnDrmClient throw InvalidProgramException
-    /// when Harmony rewrites them (mixed-mode IL). Hook the pure-C# wrapper in
-    /// YES24eBook.dll instead — same byte[], zero post-processing (verified via
-    /// PDFViewModel::getMemFileContent IL disasm).
-    /// </summary>
-    
     public static void HookSecurity(Harmony h, Assembly undrm)
     {
         try
@@ -87,58 +76,107 @@ internal static class PdfPatches
 
     public static void HookPdfViewModel(Harmony h, Assembly yes24)
     {
-        var t = yes24.GetTypes()
+        // 1. Cache PDFViewModel type for visual tree scanner
+        PdfViewModelType = yes24.GetTypes()
             .FirstOrDefault(x => x.FullName == "Yes24eBook.ViewModels.Viewer.PDFViewModel");
-        if (t == null)
+        if (PdfViewModelType != null)
         {
-            StartupHook.Log("[Hook] PDFViewModel type not found in YES24eBook.dll.");
-            return;
+            StartupHook.Log("[Hook] Located PDFViewModel type.");
         }
 
-        var targets = new[]
+        // 2. Hook ezPDFBookLib::EZPDF_OpenDRM
+        try
         {
-            new { name = "getMemFileContent", post = nameof(Post_GetMemFileContent),
-                  ret = typeof(byte[]),  args = new[] { typeof(string) } },
-            new { name = "getStreamContent", post = nameof(Post_GetStreamContent),
-                  ret = (Type)null,      args = new[] { typeof(string) } },
-        };
-
-        int hooked = 0;
-        foreach (var spec in targets)
-        {
-            var mi = t.GetMethod(spec.name,
-                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
-                null, spec.args, null);
-            if (mi == null)
+            var ezType = yes24.GetTypes()
+                .FirstOrDefault(x => x.FullName == "Yes24eBook.Viewer.Pdf.ezPDFBookLib");
+            if (ezType != null)
             {
-                StartupHook.Log($"[Hook]   {spec.name}({string.Join(",", spec.args.Select(x => x.Name))}) not found");
-                continue;
-            }
-            try
-            {
-                var pf = new HarmonyMethod(typeof(PdfPatches).GetMethod(spec.post,
-                    BindingFlags.Static | BindingFlags.NonPublic));
-                h.Patch(mi, postfix: pf);
-                StartupHook.Log($"[Hook]   patched PDFViewModel.{spec.name} -> {mi.ReturnType.Name}");
-                hooked++;
-            }
-            catch (Exception ex)
-            {
-                StartupHook.Log($"[Hook]   FAIL {spec.name}: {ex.Message}");
+                var mOpen = ezType.GetMethod("EZPDF_OpenDRM", BindingFlags.Public | BindingFlags.Static);
+                if (mOpen != null)
+                {
+                    var post = new HarmonyMethod(typeof(PdfPatches).GetMethod(nameof(Post_EZPDF_OpenDRM), BindingFlags.Static | BindingFlags.NonPublic));
+                    h.Patch(mOpen, postfix: post);
+                    StartupHook.Log("[Hook]   patched ezPDFBookLib.EZPDF_OpenDRM");
+                }
             }
         }
-        StartupHook.Log($"[Hook] {hooked} method(s) patched.");
+        catch (Exception ex)
+        {
+            StartupHook.Log("[Hook]   EZPDF_OpenDRM patch failed: " + ex.Message);
+        }
 
-        // ctor also has an obfuscator stub — can't hook it. Instead we find the
-        // live PDFViewModel instance by scanning the WPF DataContext tree.
-        PdfViewModelType = t;
+        // 3. Hook EPUBViewModel for EPUB books
+        try
+        {
+            var epubType = yes24.GetTypes()
+                .FirstOrDefault(x => x.FullName == "Yes24eBook.ViewModels.Viewer.EPUBViewModel");
+            if (epubType != null)
+            {
+                var mMem = epubType.GetMethod("getMemFileContent", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, new[] { typeof(string) }, null);
+                if (mMem != null)
+                {
+                    var post = new HarmonyMethod(typeof(PdfPatches).GetMethod(nameof(Post_GetMemFileContent), BindingFlags.Static | BindingFlags.NonPublic));
+                    h.Patch(mMem, postfix: post);
+                    StartupHook.Log("[Hook]   patched EPUBViewModel.getMemFileContent");
+                }
 
-        // Kick off a background scavenger.
-        System.Threading.Tasks.Task.Run(ActiveScavenge);
+                var mStream = epubType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                    .FirstOrDefault(m => m.Name == "getStreamContent" && m.GetParameters().Length >= 1 && m.GetParameters()[0].ParameterType == typeof(string));
+                if (mStream != null)
+                {
+                    var post = new HarmonyMethod(typeof(PdfPatches).GetMethod(nameof(Post_GetStreamContent), BindingFlags.Static | BindingFlags.NonPublic));
+                    h.Patch(mStream, postfix: post);
+                    StartupHook.Log("[Hook]   patched EPUBViewModel.getStreamContent");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            StartupHook.Log("[Hook]   EPUBViewModel patch failed: " + ex.Message);
+        }
+
+        // 4. Kick off background scavenger
+        Task.Run(ActiveScavenge);
+    }
+
+    private static void Post_EZPDF_OpenDRM(string __1)
+    {
+        try
+        {
+            string path = __1;
+            StartupHook.Log($"[Hook] EZPDF_OpenDRM opened: {path}");
+            if (!string.IsNullOrEmpty(path))
+            {
+                Task.Run(() =>
+                {
+                    Thread.Sleep(500); // Give viewer a moment to settle stream
+                    TryExtractFile(path);
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            StartupHook.Log("[Hook] Post_EZPDF_OpenDRM error: " + ex.Message);
+        }
+    }
+
+    private static bool TryExtractFile(string path)
+    {
+        if (string.IsNullOrEmpty(path) || !File.Exists(path)) return false;
+        if (_dumpedFiles.Contains(path)) return true;
+
+        byte[] bytes = InvokeGetMemFileContent(path);
+        if (bytes != null && bytes.Length > 0)
+        {
+            SaveDump(path, bytes);
+            _dumpedFiles.Add(path);
+            return true;
+        }
+        return false;
     }
 
     /// <summary>
-    /// Walk every WPF PresentationSource → visual tree → DataContext looking
+    /// Walk WPF PresentationSource -> visual tree -> DataContext looking
     /// for an instance of Yes24eBook.ViewModels.Viewer.PDFViewModel.
     /// </summary>
     private static object FindLivePdfViewModel()
@@ -177,7 +215,6 @@ internal static class PdfPatches
         if (node == null || depth > 40) return null;
         try
         {
-            // DataContext check
             var dc = node.GetType().GetProperty("DataContext")?.GetValue(node);
             if (dc != null && PdfViewModelType.IsInstanceOfType(dc)) return dc;
 
@@ -198,14 +235,15 @@ internal static class PdfPatches
 
     private static void ActiveScavenge()
     {
-        // Wait for a viewer instance and for the app to have written the .content folder.
         string contentRoot = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "Yes24eBook", ".content");
 
-        for (int spin = 0; spin < 600; spin++)          // up to 10 min
+        int lastLogSec = 0;
+
+        for (int spin = 0; spin < 600; spin++) // up to 10 min
         {
-            System.Threading.Thread.Sleep(1000);
+            Thread.Sleep(1000);
             if (LivePdfViewModel == null)
             {
                 LivePdfViewModel = FindLivePdfViewModel();
@@ -215,7 +253,6 @@ internal static class PdfPatches
             if (LivePdfViewModel == null) continue;
             if (!Directory.Exists(contentRoot)) continue;
 
-            // Find every book folder that has a .PDF next to a rights.xml (the DRM'd payload).
             string[] books;
             try
             {
@@ -231,24 +268,34 @@ internal static class PdfPatches
                 {
                     string ext = Path.GetExtension(f).ToLowerInvariant();
                     if (ext != ".pdf" && ext != ".epub") continue;
+                    if (_dumpedFiles.Contains(f)) continue;
 
                     string outFile = Path.Combine(StartupHook.DumpRoot, Path.GetFileName(f));
-                    if (File.Exists(outFile) && new FileInfo(outFile).Length > 1024) continue; // already done
+                    if (File.Exists(outFile) && new FileInfo(outFile).Length > 1024)
+                    {
+                        _dumpedFiles.Add(f);
+                        continue;
+                    }
 
                     try
                     {
                         byte[] bytes = InvokeGetMemFileContent(f);
                         if (bytes == null || bytes.Length == 0)
                         {
-                            StartupHook.Log($"[Scavenge] {f} -> null/empty");
+                            if (spin - lastLogSec > 5)
+                            {
+                                StartupHook.Log($"[Scavenge] {Path.GetFileName(f)} -> waiting for decryption (null/empty)");
+                                lastLogSec = spin;
+                            }
                             continue;
                         }
-                        // Reuse the same writer.
-                        Post_GetMemFileContent(f, bytes);
+
+                        SaveDump(f, bytes);
+                        _dumpedFiles.Add(f);
                     }
                     catch (Exception ex)
                     {
-                        StartupHook.Log($"[Scavenge] {f} -> ERROR: {ex.GetType().Name}: {ex.Message}");
+                        StartupHook.Log($"[Scavenge] {Path.GetFileName(f)} -> ERROR: {ex.GetType().Name}: {ex.Message}");
                     }
                 }
             }
@@ -257,117 +304,211 @@ internal static class PdfPatches
 
     private static byte[] InvokeGetMemFileContent(string path)
     {
-        var vm = LivePdfViewModel;
+        var vm = LivePdfViewModel ?? FindLivePdfViewModel();
         if (vm == null || PdfViewModelType == null) return null;
 
-        // First get the drmClient property.
+        // 1. First get drmClient instance
+        object drmClient = null;
         var propInfo = PdfViewModelType.GetProperty("drmClient",
             BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public)
             ?? PdfViewModelType.GetProperty("get_drmClient",
                 BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public);
-        object drmClient;
+
         if (propInfo != null)
             drmClient = propInfo.GetValue(vm);
-        else
+
+        if (drmClient == null)
         {
             var getter = PdfViewModelType.GetMethod("get_drmClient",
                 BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public);
-            if (getter == null)
-            {
-                // Try any field of type UnDrmClient
-                var f = PdfViewModelType.GetFields(BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public)
-                    .FirstOrDefault(x => x.FieldType.FullName == "UnDrmClientNet.UnDrmClient");
-                if (f == null) { StartupHook.Log("[Scavenge] drmClient not reachable."); return null; }
-                drmClient = f.GetValue(vm);
-            }
-            else drmClient = getter.Invoke(vm, null);
+            if (getter != null)
+                drmClient = getter.Invoke(vm, null);
         }
-        if (drmClient == null) { StartupHook.Log("[Scavenge] drmClient == null (book not yet opened?)"); return null; }
 
-        var mi = drmClient.GetType().GetMethod("GetMemFileContent",
-            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
-            null, new[] { typeof(string) }, null);
-        if (mi == null) { StartupHook.Log("[Scavenge] UnDrmClient.GetMemFileContent(string) missing"); return null; }
+        if (drmClient == null)
+        {
+            var f = PdfViewModelType.GetFields(BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public)
+                .FirstOrDefault(x => x.FieldType.FullName != null && x.FieldType.FullName.Contains("UnDrmClient"));
+            if (f != null)
+                drmClient = f.GetValue(vm);
+        }
 
-        return (byte[])mi.Invoke(drmClient, new object[] { path });
+        // Strategy A: Call method on drmClient returning byte[] taking (string)
+        // Matches obfuscated "AB" in latest version, "GetMemFileContent" in older versions
+        if (drmClient != null)
+        {
+            var miBytes = drmClient.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                .FirstOrDefault(m => m.ReturnType == typeof(byte[]) &&
+                                     m.GetParameters().Length == 1 &&
+                                     m.GetParameters()[0].ParameterType == typeof(string));
+            if (miBytes != null)
+            {
+                try
+                {
+                    var res = (byte[])miBytes.Invoke(drmClient, new object[] { path });
+                    if (res != null && res.Length > 0)
+                    {
+                        StartupHook.Log($"[Scavenge] Obtained {res.Length} bytes via {miBytes.DeclaringType?.Name}.{miBytes.Name}('{Path.GetFileName(path)}')");
+                        return res;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    StartupHook.Log($"[Scavenge] {miBytes.Name} error: {ex.Message}");
+                }
+            }
+
+            // Strategy B: Call method on drmClient returning Stream taking (string)
+            // Matches obfuscated "C" in latest version, "GetStreamContent" in older versions
+            var miStream = drmClient.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                .FirstOrDefault(m => typeof(Stream).IsAssignableFrom(m.ReturnType) &&
+                                     m.GetParameters().Length == 1 &&
+                                     m.GetParameters()[0].ParameterType == typeof(string));
+            if (miStream != null)
+            {
+                try
+                {
+                    using var s = miStream.Invoke(drmClient, new object[] { path }) as Stream;
+                    if (s != null)
+                    {
+                        using var ms = new MemoryStream();
+                        s.CopyTo(ms);
+                        var res = ms.ToArray();
+                        if (res != null && res.Length > 0)
+                        {
+                            StartupHook.Log($"[Scavenge] Obtained {res.Length} bytes via {miStream.DeclaringType?.Name}.{miStream.Name} stream");
+                            return res;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    StartupHook.Log($"[Scavenge] {miStream.Name} error: {ex.Message}");
+                }
+            }
+        }
+        else
+        {
+            StartupHook.Log("[Scavenge] drmClient not reachable on PDFViewModel.");
+        }
+
+        // Strategy C: Read _pStream or any Stream field on PDFViewModel directly
+        var streamFields = PdfViewModelType.GetFields(BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public)
+            .Where(f => typeof(Stream).IsAssignableFrom(f.FieldType));
+
+        foreach (var sf in streamFields)
+        {
+            try
+            {
+                var s = sf.GetValue(vm) as Stream;
+                if (s != null && s.CanRead)
+                {
+                    long origPos = 0;
+                    if (s.CanSeek)
+                    {
+                        origPos = s.Position;
+                        s.Position = 0;
+                    }
+                    using var ms = new MemoryStream();
+                    s.CopyTo(ms);
+                    if (s.CanSeek)
+                    {
+                        s.Position = origPos;
+                    }
+                    var res = ms.ToArray();
+                    if (res != null && res.Length > 0)
+                    {
+                        StartupHook.Log($"[Scavenge] Obtained {res.Length} bytes directly via {sf.Name} stream");
+                        return res;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                StartupHook.Log($"[Scavenge] Stream field {sf.Name} read error: {ex.Message}");
+            }
+        }
+
+        return null;
     }
 
-    // Kept for backward-compat name — same as HookPdfViewModel now.
-    public static void HookUnDrm(Harmony h, Assembly _) { /* obsolete */ }
-    public static void Apply(Harmony h, Assembly yes24) => HookPdfViewModel(h, yes24);
-
-    // Postfix for getStreamContent: reads the returned UnDrmStream fully into a byte[]
-    // and rewinds so the viewer isn't disturbed.
-    private static void Post_GetStreamContent(string __0, System.IO.Stream __result)
+    // Postfix for getStreamContent
+    private static void Post_GetStreamContent(string __0, Stream __result)
     {
         try
         {
             if (__result == null) return;
             if (!__result.CanSeek)
             {
-                StartupHook.Log($"[Dump] Stream(\"{__0}\") — non-seekable, skipping.");
+                StartupHook.Log($"[Dump] Stream('{__0}') — non-seekable, skipping.");
                 return;
             }
             long pos = __result.Position;
             __result.Position = 0;
-            using var ms = new System.IO.MemoryStream();
+            using var ms = new MemoryStream();
             __result.CopyTo(ms);
             __result.Position = pos;
             var bytes = ms.ToArray();
-            // Reuse the byte[] writer.
-            Post_GetMemFileContent(__0, bytes);
+            SaveDump(__0, bytes);
         }
         catch (Exception ex) { StartupHook.Log("[Dump] Stream postfix: " + ex.Message); }
     }
 
-    // path = __0, result = __result. Post-return: bytes are the clear-text content.
+    // Postfix for getMemFileContent
     private static void Post_GetMemFileContent(string __0, byte[] __result)
     {
         try
         {
-            string path = __0 ?? "(null)";
-            int size = __result?.Length ?? 0;
-            string head = __result != null ? HexHead(__result, 8) : "(null)";
-            StartupHook.Log($"[Dump] GetMemFileContent(\"{path}\") -> byte[{size}]  head={head}");
-
-            if (__result == null || __result.Length == 0) return;
-
-            string ext = Path.GetExtension(path);
-            if (string.IsNullOrEmpty(ext)) ext = SniffExtension(__result);
-            string origName = Path.GetFileNameWithoutExtension(path);
-            if (string.IsNullOrEmpty(origName)) origName = "content";
-            origName = Sanitize(origName);
-
-            int idx = Interlocked.Increment(ref _counter);
-            string outFile = Path.Combine(StartupHook.DumpRoot, $"{origName}{ext}");
-
-            // If we're called multiple times for the same file (viewer might read again),
-            // don't overwrite a bigger correct copy with a truncated one; and if identical,
-            // skip. Otherwise disambiguate.
-            lock (_writeLock)
-            {
-                if (File.Exists(outFile))
-                {
-                    long existing = new FileInfo(outFile).Length;
-                    if (existing == __result.Length) return;      // duplicate, skip
-                    if (existing > __result.Length)                // keep the bigger one
-                        outFile = Path.Combine(StartupHook.DumpRoot,
-                            $"{origName}_{idx:D3}{ext}");
-                }
-                File.WriteAllBytes(outFile, __result);
-            }
-
-            StartupHook.Log($"[Dump]   saved -> {outFile}");
-            if (__result.Length >= 4 &&
-                __result[0] == 0x25 && __result[1] == 0x50 &&
-                __result[2] == 0x44 && __result[3] == 0x46)
-            {
-                StartupHook.Log("[Dump]   ✓ Valid PDF signature — full book extracted.");
-            }
+            if (__result != null && __result.Length > 0)
+                SaveDump(__0, __result);
         }
         catch (Exception ex)
         {
-            StartupHook.Log("[Dump] postfix error: " + ex);
+            StartupHook.Log("[Dump] Post_GetMemFileContent error: " + ex);
+        }
+    }
+
+    private static void SaveDump(string origPath, byte[] bytes)
+    {
+        if (bytes == null || bytes.Length == 0) return;
+
+        string path = origPath ?? "(unknown)";
+        int size = bytes.Length;
+        string head = HexHead(bytes, 8);
+        StartupHook.Log($"[Dump] Decrypted payload: '{Path.GetFileName(path)}' -> {size} bytes, head={head}");
+
+        string ext = Path.GetExtension(path);
+        if (string.IsNullOrEmpty(ext)) ext = SniffExtension(bytes);
+        string origName = Path.GetFileNameWithoutExtension(path);
+        if (string.IsNullOrEmpty(origName)) origName = "content";
+        origName = Sanitize(origName);
+
+        int idx = Interlocked.Increment(ref _counter);
+        string outFile = Path.Combine(StartupHook.DumpRoot, $"{origName}{ext}");
+
+        lock (_writeLock)
+        {
+            if (File.Exists(outFile))
+            {
+                long existing = new FileInfo(outFile).Length;
+                if (existing == bytes.Length) return; // duplicate, skip
+                if (existing > bytes.Length)
+                    outFile = Path.Combine(StartupHook.DumpRoot, $"{origName}_{idx:D3}{ext}");
+            }
+            File.WriteAllBytes(outFile, bytes);
+        }
+
+        StartupHook.Log($"[Dump]   Saved -> {outFile}");
+        if (bytes.Length >= 4 &&
+            bytes[0] == 0x25 && bytes[1] == 0x50 &&
+            bytes[2] == 0x44 && bytes[3] == 0x46)
+        {
+            StartupHook.Log("[Dump]   [SUCCESS] Valid PDF signature (%PDF) - PDF extracted cleanly!");
+        }
+        else if (bytes.Length >= 4 &&
+            bytes[0] == 0x50 && bytes[1] == 0x4B)
+        {
+            StartupHook.Log("[Dump]   [SUCCESS] Valid ZIP/EPUB signature (PK..) - EPUB extracted cleanly!");
         }
     }
 
@@ -375,7 +516,7 @@ internal static class PdfPatches
     {
         if (b.Length < 4) return ".bin";
         if (b[0] == 0x25 && b[1] == 0x50 && b[2] == 0x44 && b[3] == 0x46) return ".pdf";
-        if (b[0] == 0x50 && b[1] == 0x4B) return ".zip";  // epub/zip
+        if (b[0] == 0x50 && b[1] == 0x4B) return ".zip";
         if (b.Length >= 5 && b[0] == 0x3C && b[1] == 0x3F && b[2] == 0x78 && b[3] == 0x6D) return ".xml";
         if (b[0] == 0x3C) return ".html";
         return ".bin";
