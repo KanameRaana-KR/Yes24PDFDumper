@@ -1,22 +1,18 @@
-# Yes24PDFDumper
+# Yes24PDFDumper - Patched in 2026.09.08
 
 YES24 eBook 뷰어에서 **본인이 구매·소장 중인 DRM PDF** 를 원본 그대로 추출하는 .NET 8 도구.
 
 `DOTNET_STARTUP_HOOKS` 로 뷰어 프로세스에 관리형 DLL을 인젝션하고, **Harmony** 로 `Yes24eBook.ViewModels.Viewer.PDFViewModel.getMemFileContent(string) → byte[]` 를 후킹하면 뷰어가 만들어낸 완전히 복호화된 PDF 바이트 배열이 그대로 파일로써 저장됩니다.
 
-:: 2026/09/07 이후 기준 DOTNET_STARTUP_HOOKS 패치됨.
+Telegram : @RaanaKR
+
 ---
 
 ## ✨ 특징
 
 - **원본 PDF 그대로**: 페이지 스크린샷이 아니라 내부에서 가져오는 **원본 파일** 을 획득
 - **자동 스캐빈저**: WPF 트리에서 `PDFViewModel` 인스턴스를 찾아, `%APPDATA%\Yes24eBook\.content\` 하위 신간이 뜨면 리플렉션으로 `UnDrmClient.GetMemFileContent()` 능동 호출
-- **2026.09.07 안티 후킹 패치 완벽 우회**:
-  - **환경변수 선제 소거**: 뷰어 부트스트랩 즉시 Win32 `SetEnvironmentVariableW("DOTNET_STARTUP_HOOKS", null)`를 호출하여 `UnDrmClientNet.dll`의 네이티브 환경변수 스캐너(`ScrubDotnetInjectionVars`)를 무력화
-  - **어셈블리 블랙리스트 우회**: 프로젝트명을 `YES24Plugin`으로 지정하고 Harmony 메타데이터 이름을 `LibCore`로 바이너리 패칭하여 `ValidateAllLoadedAssemblies`의 하드코딩 블랙리스트(`"Dumper"`, `"Harmony"`)를 원천 회피
-  - **보안 훅 중화 (2중 안전망)**: `UnDrmSecurityCoreNet.UnDrmAntiPassAssembly.DetectFakeAssembly`를 Harmony Prefix로 가로채 항시 통과 처리
-- **C++/CLI 우회**: DRM 엔진(`UnDrmClientNet`) 은 C++/CLI mixed-mode 라 Harmony IL rewrite 가 실패 → 순수 C# wrapper 계층인 `PDFViewModel` 에서 후킹
-
+- **2026.09.08** Patched by Yes24.
 ---
 
 ## 📋 요구 사항
@@ -44,7 +40,7 @@ dotnet build YES24Plugin\YES24Plugin.csproj -c Release
 1. **본인이 구매한 책을 YES24 eBook 앱에서 미리 다운로드** (앱 재실행 없이 라이브러리에 나타나야 함)
 2. 저장소 루트에서 `run.bat` 더블클릭
 3. 뷰어가 뜨면 **책 커버를 클릭해 리더를 열기**
-4. `dump\` 폴더에 `〈책제목〉.PDF` 가 자동 저장됨
+4. `dump\` 폴더에 `uuid.PDF` 가 자동 저장됨
 
 성공 시 로그(`dump\dumper.log`) 예시:
 
@@ -118,7 +114,7 @@ Yes24PDFDumper/
 
 ### AI
 
-- Claude Opus 4.7(Low + Medium)
+- Claude Opus 4.7(Low + Medium) + Gemini 3.8 flash(high)[2026.09.07 대응 패치용]
 
 ---
 
