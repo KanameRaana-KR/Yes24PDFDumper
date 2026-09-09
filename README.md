@@ -1,4 +1,4 @@
-# Yes24PDFDumper
+# Yes24PDFDumper - Patched in 2026.09.08
 
 YES24 eBook 뷰어에서 **본인이 구매·소장 중인 DRM PDF** 를 원본 그대로 추출하는 .NET 8 도구.
 
