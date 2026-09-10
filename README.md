@@ -12,7 +12,7 @@ Telegram : @RaanaKR
 
 - **원본 PDF 그대로**: 페이지 스크린샷이 아니라 내부에서 가져오는 **원본 파일** 을 획득
 - **자동 스캐빈저**: WPF 트리에서 `PDFViewModel` 인스턴스를 찾아, `%APPDATA%\Yes24eBook\.content\` 하위 신간이 뜨면 리플렉션으로 `UnDrmClient.GetMemFileContent()` 능동 호출
-- **2026.09.08** Patched by Yes24.
+- **2026.09.08** Patched by Yes24.(Dumper, Harmony 등 문자열 검색[...])
 - **2026.09.10** 동적 함수 탐색을 통해 0908 패치 이후 적용 완료
 ---
 
